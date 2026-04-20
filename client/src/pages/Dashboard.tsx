@@ -29,7 +29,7 @@ interface MarketData {
   signal_scores: { ks1: number; ks2: number; ks3: number; ks4: number; ig_hy: number; vix: number };
   binary_switches: { ks1: number; ks2: number; ks3: number; ks4: number; active_count: number };
   _stale?: boolean;
-  _credentials_expired?: boolean;
+  _data_source_error?: boolean;
   signal_weights: Record<string, { weight: number; label: string; color: string }>;
   thresholds: { risk_off: number; caution: number };
 }
@@ -1961,12 +1961,12 @@ export default function Dashboard() {
       </header>
 
       {/* Credentials expired banner (takes precedence over the stale banner) */}
-      {d?._credentials_expired && !credBannerDismissed && (
+      {d?._data_source_error && !credBannerDismissed && (
         <div className="flex items-center justify-between gap-2 px-4 py-2 bg-amber-900/60 border-b border-amber-500 text-amber-200 flex-shrink-0">
           <div className="flex items-center gap-2">
-            <span className="text-sm">🔑</span>
+            <span className="text-sm">⚠️</span>
             <span className="text-xs font-medium">
-              Connector credentials expired — open a new chat session to restore live data
+              Live data unavailable — retrying. Showing last cached values.
             </span>
           </div>
           <button
@@ -1980,7 +1980,7 @@ export default function Dashboard() {
       )}
 
       {/* Stale warning — hidden when credentials-expired banner is active */}
-      {d && !d._credentials_expired && (() => {
+      {d && !d._data_source_error && (() => {
         const minOld = differenceInMinutes(new Date(), new Date(d.timestamp));
         const isStale = minOld > 15 || d._stale;
         if (!isStale) return null;

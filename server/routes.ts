@@ -3,9 +3,7 @@ import type { Server } from "http";
 import { execSync } from "child_process";
 import Database from "better-sqlite3";
 import path from "path";
-import fs from "fs";
-import * as https from "https";
-import * as httpMod from "http";
+import yahooFinance from "yahoo-finance2";
 
 // ─── Evidence-Based Signal Weights (from backtesting 2007-2026) ───────────────
 // Derived via logistic regression + IC analysis on 4,784 trading days
@@ -44,68 +42,8 @@ db.exec(`
   );
 `);
 
-// ─── Finance connector (v2-proven pattern) ───────────────────────────────────
-// Tracks whether the most recent connector call received a 401 (expired credentials).
-// Flipped by callFinance() on every POST response; read by /api/market and /api/ping.
-let credentialsExpired = false;
-
-function readEndpointConfig(): { endpoint: string; key: string; agentId: string } {
-  const raw = fs.readFileSync("/tmp/.tools_service_endpoint", "utf8");
-  const cfg = JSON.parse(raw);
-  return { endpoint: cfg.endpoint, key: cfg.key, agentId: cfg.agent_id || "" };
-}
-
-function callFinance(toolName: string, args: Record<string, unknown>): Promise<any> {
-  const { endpoint, key, agentId } = readEndpointConfig();
-  const fullUrl = `${endpoint.replace(/\/$/, "")}/rest/connector-service/connectors/finance/tools/${toolName}/execute`;
-  const url = new URL(fullUrl);
-  const body = JSON.stringify({ parameters: args });
-  return new Promise<any>((resolve, reject) => {
-    const mod = url.protocol === "https:" ? https : httpMod;
-    const req = (mod as typeof https).request(
-      {
-        hostname: url.hostname,
-        port: url.port || (url.protocol === "https:" ? 443 : 80),
-        path: url.pathname,
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(body),
-          "x-api-key": key,
-          "X-App-ApiClient": "asi-sandbox",
-          ...(agentId ? { "X-Agent-ID": agentId } : {}),
-        },
-      },
-      (res) => {
-        let data = "";
-        res.on("data", (chunk) => { data += chunk; });
-        res.on("end", () => {
-          // Track credential state based on HTTP status. 401 = expired/invalid key.
-          if (res.statusCode === 401) {
-            if (!credentialsExpired) {
-              console.warn("[WARN] Finance connector returned 401 — credentials may have expired");
-            }
-            credentialsExpired = true;
-            reject(new Error(`401 Unauthorized (${toolName}): credentials expired`));
-            return;
-          }
-          // Any non-401 response with a parseable body is treated as a successful reset.
-          try {
-            const parsed = JSON.parse(data);
-            credentialsExpired = false;
-            resolve(parsed);
-          } catch {
-            reject(new Error(`Parse error: ${data.slice(0, 200)}`));
-          }
-        });
-      }
-    );
-    req.on("error", (e) => reject(new Error(`Network error (${toolName}): ${e.message}`)));
-    req.setTimeout(30000, () => { req.destroy(); reject(new Error(`Timeout: ${toolName}`)); });
-    req.write(body);
-    req.end();
-  });
-}
+// ─── Data source error flag ───────────────────────────────────────────────────
+let dataSourceError = false;
 
 // ─── FRED TOTBKCR (robust to weekly OR monthly cadence) ───────────────────────
 // Fetches 2+ years of data and finds the observation closest to exactly 365 days
@@ -245,60 +183,6 @@ let cachedData: any = null;
 let lastFetch = 0;
 const CACHE_TTL = 3 * 60 * 1000; // 3 minutes
 
-// Parse quote from finance_quotes response
-// Response: { status: "success", content: { content: "## SPY Quote\n| symbol | name | ... |\n| --- |...\n| SPY | ... | price |..." } }
-function extractQuote(result: any, sym: string) {
-  try {
-    // Navigate the nested content structure
-    let content = "";
-    if (typeof result?.content?.content === "string") content = result.content.content;
-    else if (typeof result?.content === "string") content = result.content;
-    else if (Array.isArray(result?.content) && typeof result.content[0]?.text === "string") content = result.content[0].text;
-    else content = typeof result === "string" ? result : JSON.stringify(result || {});
-
-    const upperSym = sym.toUpperCase().replace("^", "");
-    const lines = content.split("\n").filter((l: string) => l.includes("|"));
-
-    // Find header row to map column positions
-    let priceCol = 5, chgPctCol = 8, high52Col = 17, low52Col = 16;
-    for (let i = 0; i < lines.length; i++) {
-      const lower = lines[i].toLowerCase();
-      if (lower.includes("symbol") && lower.includes("price")) {
-        const hcols = lines[i].split("|").map((c: string) => c.trim());
-        hcols.forEach((c, j) => {
-          const cl = c.toLowerCase().replace(/\s+/g, "");
-          if (cl === "price") priceCol = j;
-          else if (cl === "changespercentage" || cl === "changespercent" || cl === "changepercent" || cl === "changepct") chgPctCol = j;
-          else if (cl === "yearhigh" || cl === "52weekhigh" || cl === "week52high") high52Col = j;
-          else if (cl === "yearlow" || cl === "52weeklow" || cl === "week52low") low52Col = j;
-        });
-        break;
-      }
-    }
-
-    for (const line of lines) {
-      const cols = line.split("|").map((c: string) => c.trim());
-      const sym0 = cols[1]?.toUpperCase().replace("^", "");
-      if (sym0 === upperSym) {
-        const price = parseFloat((cols[priceCol] || "").replace(/[$,]/g, ""));
-        const chgPct = parseFloat((cols[chgPctCol] || "").replace(/[%+]/g, ""));
-        const high52 = parseFloat((cols[high52Col] || "").replace(/[$,]/g, ""));
-        const low52 = parseFloat((cols[low52Col] || "").replace(/[$,]/g, ""));
-        if (!isNaN(price) && price > 0) {
-          return {
-            price,
-            chg: isNaN(chgPct) ? 0 : chgPct,
-            high52: isNaN(high52) || high52 <= 0 ? price * 1.1 : Math.max(high52, price),
-            low52: isNaN(low52) || low52 <= 0 ? price * 0.85 : Math.min(low52, price),
-          };
-        }
-      }
-    }
-  } catch (e) {
-    console.error("extractQuote error:", e);
-  }
-  return null;
-}
 
 async function getMarketData() {
   const now = Date.now();
@@ -308,27 +192,33 @@ async function getMarketData() {
   const dbCache = db.prepare("SELECT value, updated_at FROM cache WHERE key = 'market_v3'").get() as any;
 
   try {
-    // Use finance_quotes — the proven v2 method. Single call with all symbols
-    // to reduce connector latency and request budget.
-    const [quotesMain, vixRes] = await Promise.allSettled([
-      callFinance("finance_quotes", { symbols: ["SPY", "HYG", "LQD", "TLT", "TIP"] }),
-      callFinance("finance_quotes", { symbols: ["^VIX"] }),
+    const [quotesRes, vixRes] = await Promise.allSettled([
+      yahooFinance.quote(["SPY","HYG","LQD","TLT","TIP"]),
+      yahooFinance.quote("^VIX"),
     ]);
+    const quotes = quotesRes.status === "fulfilled" ? quotesRes.value : [];
+    const qSpy = Array.isArray(quotes) ? quotes.find((q:any) => q.symbol === "SPY") : null;
+    const qHyg = Array.isArray(quotes) ? quotes.find((q:any) => q.symbol === "HYG") : null;
+    const qLqd = Array.isArray(quotes) ? quotes.find((q:any) => q.symbol === "LQD") : null;
+    const qTlt = Array.isArray(quotes) ? quotes.find((q:any) => q.symbol === "TLT") : null;
+    const qTip = Array.isArray(quotes) ? quotes.find((q:any) => q.symbol === "TIP") : null;
+    const qVixRaw = vixRes.status === "fulfilled" ? (vixRes.value as any) : null;
 
-    const qMain = quotesMain.status === "fulfilled" ? quotesMain.value : null;
-    const qVixData = vixRes.status === "fulfilled" ? vixRes.value : null;
-
-    const qSpy = qMain && extractQuote(qMain, "SPY");
-    const qHyg = qMain && extractQuote(qMain, "HYG");
-    const qLqd = qMain && extractQuote(qMain, "LQD");
-    const qTlt = qMain && extractQuote(qMain, "TLT");
-    const qTip = qMain && extractQuote(qMain, "TIP");
-    const qVix = qVixData && extractQuote(qVixData, "^VIX");
+    const spyPrice = qSpy?.regularMarketPrice ?? 0;
+    const hygPrice = qHyg?.regularMarketPrice ?? 0;
+    const lqdPrice = qLqd?.regularMarketPrice ?? 0;
+    const vixValue = (qVixRaw?.regularMarketPrice ?? 0) > 0 ? qVixRaw.regularMarketPrice : 20;
+    const tltPriceVal = qTlt?.regularMarketPrice ?? null;
+    const tipPriceVal = qTip?.regularMarketPrice ?? null;
+    const spyChg = qSpy?.regularMarketChangePercent ?? 0;
+    const hygChg = qHyg?.regularMarketChangePercent ?? 0;
+    const lqdChg = qLqd?.regularMarketChangePercent ?? 0;
+    const hyg52wHigh = Math.max(qHyg?.fiftyTwoWeekHigh ?? hygPrice * 1.08, hygPrice);
 
     const fredData = fetchFRED();
 
     // If core signals missing, prefer cached payload over null
-    if (!qSpy || !qHyg || !qLqd) {
+    if (!spyPrice || !hygPrice || !lqdPrice) {
       if (dbCache) {
         const stale = JSON.parse(dbCache.value);
         stale._stale = true;
@@ -339,19 +229,7 @@ async function getMarketData() {
       return null;
     }
 
-    const spyPrice = qSpy.price;
-    const hygPrice = qHyg.price;
-    const lqdPrice = qLqd.price;
-    const vixValue = qVix?.price && qVix.price > 0 ? qVix.price : 20;
-    const tltPriceVal = qTlt?.price;
-    const tipPriceVal = qTip?.price;
-
-    const spyChg = qSpy.chg;
-    const hygChg = qHyg.chg;
-    const lqdChg = qLqd.chg;
-
     // ── KS1: HYG % below 52w high ──
-    const hyg52wHigh = qHyg.high52 && qHyg.high52 >= hygPrice ? qHyg.high52 : hygPrice * 1.08;
     const ks1_pct = Math.max(0, ((hyg52wHigh - hygPrice) / hyg52wHigh) * 100);
 
     // ── KS2: Joint selloff (today only — live) ──
@@ -435,11 +313,13 @@ async function getMarketData() {
       console.error("DB write error (non-fatal):", dbErr);
     }
 
+    dataSourceError = false;
     cachedData = payload;
     lastFetch = now;
     return payload;
   } catch (e) {
     console.error("Market fetch error:", e);
+    dataSourceError = true;
     // Back off 30s before next retry (don't hammer the connector on every request)
     lastFetch = now - CACHE_TTL + 30_000;
     if (dbCache) {
@@ -640,34 +520,7 @@ function buildScenarios(eventId: string, m: Record<string, any>) {
 
 async function buildCatalystsPayload(): Promise<any> {
   let macroData: Record<string, any> = {};
-  try {
-    const resp = await callFinance("finance_macro_snapshot", {
-      countries: ["United States"],
-      keywords: ["inflation rate", "core inflation", "interest rate", "GDP growth", "unemployment rate", "PCE", "retail sales"],
-      action: "Get current macro values for catalyst calendar consensus estimates",
-    });
-    const txt = typeof resp?.content === "string" ? resp.content :
-      (typeof resp?.content?.content === "string" ? resp.content.content : (resp?.content?.[0]?.text || ""));
-    const lines = String(txt).split("\n").filter((l: string) => l.startsWith("|") && l.includes("United States"));
-    for (const line of lines) {
-      const cells = line.split("|").map((c: string) => c.trim()).filter(Boolean);
-      if (cells.length >= 4) {
-        const cat = cells[1]?.toLowerCase() || "";
-        const val = parseFloat(cells[2]);
-        if (isNaN(val)) continue;
-        if (cat.includes("inflation rate") && !cat.includes("mom") && !cat.includes("core") && !cat.includes("energy") && !cat.includes("food") && !cat.includes("service")) macroData.inflationRate = val;
-        if (cat.includes("core inflation rate") && !cat.includes("mom")) macroData.coreInflationRate = val;
-        if (cat === "interest rate") macroData.interestRate = val;
-        if (cat.includes("gdp growth rate") && !cat.includes("contribution")) macroData.gdpGrowth = val;
-        if (cat === "unemployment rate") macroData.unemploymentRate = val;
-        if (cat.includes("core pce price index") && !cat.includes("mom") && !cat.includes("annual") && !cat.includes("qoq")) macroData.corePCE = val;
-        if (cat.includes("retail sales mom") && !cat.includes("ex") && !cat.includes("gas")) macroData.retailSales = val;
-      }
-    }
-  } catch (e) {
-    console.error("[catalysts] macro fetch error:", e);
-  }
-  // Always ensure defaults so scenarios have consistent copy even if macro fetch partially failed
+  // Always ensure defaults so scenarios have consistent copy
   const defaults = { inflationRate: 3.3, coreInflationRate: 2.6, interestRate: 4.33, gdpGrowth: 0.5, unemploymentRate: 4.3, corePCE: 2.8, retailSales: 0.6 };
   for (const [k, v] of Object.entries(defaults)) {
     if (macroData[k] == null || isNaN(macroData[k])) macroData[k] = v;
@@ -693,13 +546,13 @@ export async function registerRoutes(_server: Server, app: Express) {
     try {
       const data = await getMarketData();
       if (!data) {
-        return res.status(503).json({ error: "Data unavailable", _credentials_expired: credentialsExpired });
+        return res.status(503).json({ error: "Data unavailable", _data_source_error: dataSourceError });
       }
       // Always include credential state so the client can show a distinct banner.
-      res.json({ ...data, _credentials_expired: credentialsExpired });
+      res.json({ ...data, _data_source_error: dataSourceError });
     } catch (e: any) {
       console.error("/api/market handler error:", e);
-      res.status(500).json({ error: e?.message || "Internal error", _credentials_expired: credentialsExpired });
+      res.status(500).json({ error: e?.message || "Internal error", _data_source_error: dataSourceError });
     }
   });
 
@@ -765,10 +618,6 @@ export async function registerRoutes(_server: Server, app: Express) {
       return res.status(400).json({ error: "Question required" });
     }
 
-    try { readEndpointConfig(); } catch {
-      return res.json({ answer: "Finance connector not available. Check your session." });
-    }
-
     const market = await getMarketData().catch(() => null);
     const regime = market?.regime || "UNKNOWN";
     const score = market?.composite_pct ?? 0;
@@ -776,24 +625,6 @@ export async function registerRoutes(_server: Server, app: Express) {
     const hygChgRaw = market?.prices?.hygChg;
     const hygChg2: number = typeof hygChgRaw === "number" ? hygChgRaw : 0;
     const ks4v = market?.fred?.yoy ?? "N/A";
-
-    try {
-      // finance_ticker_sentiment — returns narrative text for SPY
-      const sentResult = await callFinance("finance_ticker_sentiment", { symbol: "SPY" });
-      const narrative = typeof sentResult?.content === "string"
-        ? sentResult.content
-        : (typeof sentResult?.content?.content === "string" ? sentResult.content.content
-          : (sentResult?.analysis || sentResult?.sentiment || sentResult?.summary || ""));
-      if (narrative && narrative.length > 40) {
-        const ctx = `[Live context: Regime=${regime}, Score=${score}/100, VIX=${vixVal.toFixed(1)}, HYG=${hygChg2 >= 0 ? "+" : ""}${hygChg2.toFixed(2)}%, Bank Credit YoY=${ks4v}%]`;
-        return res.json({
-          answer: `${ctx}\n\nYour question: "${question}"\n\n${narrative}`,
-          regime, score,
-        });
-      }
-    } catch (e) {
-      console.error("Ask AI error:", e);
-    }
 
     // Honest fallback
     res.json({
@@ -823,5 +654,5 @@ export async function registerRoutes(_server: Server, app: Express) {
   });
 
   // Keepalive
-  app.get("/api/ping", (_req, res) => res.json({ ok: true, ts: Date.now(), credentials_expired: credentialsExpired }));
+  app.get("/api/ping", (_req, res) => res.json({ ok: true, ts: Date.now(), data_source_error: dataSourceError }));
 }
