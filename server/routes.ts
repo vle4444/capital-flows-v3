@@ -4,7 +4,13 @@ import { execSync } from "child_process";
 import Database from "better-sqlite3";
 import path from "path";
 import * as _yf from "yahoo-finance2";
-const yahooFinance: any = (_yf as any).default ?? _yf;
+// tsx/esbuild ESM interop: the package exports its class as default (not a
+// pre-instantiated singleton). We must call `new` to get an instance with .quote().
+const _YFClass: any = (_yf as any).default ?? _yf;
+const yahooFinance: any =
+  typeof _YFClass?.quote === "function"
+    ? _YFClass          // already an instance (forward-compat)
+    : new _YFClass({});  // instantiate the class to get prototype methods
 
 // ─── Evidence-Based Signal Weights (from backtesting 2007-2026) ───────────────
 // Derived via logistic regression + IC analysis on 4,784 trading days
