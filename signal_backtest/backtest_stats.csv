@@ -1,0 +1,5 @@
+Label,Total Return,Ann. Return,Ann. Vol,Sharpe,Max Drawdown,Calmar
+Buy & Hold SPY,708.3%,12.7%,19.8%,0.64,-44.7%,0.28
+Current System (Equal-Weight Binary),1322.3%,16.3%,17.5%,0.94,-38.2%,0.43
+Weighted Composite (4 signals),2166.6%,19.5%,13.6%,1.44,-33.6%,0.58
+Weighted Composite (6 signals),7672.9%,28.2%,8.7%,3.22,-5.1%,5.56

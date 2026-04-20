@@ -1,0 +1,79 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222 47% 5%;
+    --foreground: 213 31% 91%;
+    --card: 223 40% 8%;
+    --card-foreground: 213 31% 91%;
+    --popover: 223 40% 8%;
+    --popover-foreground: 213 31% 91%;
+    --primary: 217 91% 60%;
+    --primary-foreground: 222 47% 5%;
+    --secondary: 223 40% 13%;
+    --secondary-foreground: 213 31% 91%;
+    --muted: 223 40% 13%;
+    --muted-foreground: 215 20% 55%;
+    --accent: 217 91% 60%;
+    --accent-foreground: 222 47% 5%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 213 31% 91%;
+    --border: 223 40% 15%;
+    --input: 223 40% 15%;
+    --ring: 217 91% 60%;
+    --radius: 0.5rem;
+
+    /* Custom signal colors */
+    --signal-green: 142 70% 45%;
+    --signal-yellow: 43 96% 56%;
+    --signal-red: 0 84% 60%;
+    --signal-blue: 217 91% 60%;
+    --signal-purple: 270 60% 65%;
+    --signal-cyan: 188 85% 43%;
+  }
+}
+
+@layer base {
+  * { @apply border-border; }
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+}
+
+/* Gauge arc */
+.gauge-track { stroke: hsl(223 40% 15%); }
+.gauge-fill-long { stroke: hsl(142 70% 45%); }
+.gauge-fill-caution { stroke: hsl(43 96% 56%); }
+.gauge-fill-risk { stroke: hsl(0 84% 60%); }
+
+/* Score bar */
+.score-bar-bg { background: hsl(223 40% 13%); }
+
+/* Glow effects */
+.glow-green { box-shadow: 0 0 20px hsl(142 70% 45% / 0.3); }
+.glow-yellow { box-shadow: 0 0 20px hsl(43 96% 56% / 0.3); }
+.glow-red { box-shadow: 0 0 20px hsl(0 84% 60% / 0.35); }
+
+/* Pulse animation */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.85); }
+}
+.pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+
+/* Subtle background grid */
+.grid-bg {
+  background-image:
+    linear-gradient(hsl(223 40% 15% / 0.4) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(223 40% 15% / 0.4) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: hsl(223 40% 8%); }
+::-webkit-scrollbar-thumb { background: hsl(223 40% 20%); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: hsl(217 91% 60% / 0.5); }
