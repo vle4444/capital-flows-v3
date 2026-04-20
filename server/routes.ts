@@ -3,7 +3,8 @@ import type { Server } from "http";
 import { execSync } from "child_process";
 import Database from "better-sqlite3";
 import path from "path";
-import yahooFinance from "yahoo-finance2";
+import * as _yf from "yahoo-finance2";
+const yahooFinance: any = (_yf as any).default ?? _yf;
 
 // ─── Evidence-Based Signal Weights (from backtesting 2007-2026) ───────────────
 // Derived via logistic regression + IC analysis on 4,784 trading days
