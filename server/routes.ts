@@ -3,6 +3,7 @@ import type { Server } from "http";
 import { execSync } from "child_process";
 import Database from "better-sqlite3";
 import path from "path";
+import fs from "fs";
 import * as _yf from "yahoo-finance2";
 // tsx/esbuild ESM interop: the package exports its class as default (not a
 // pre-instantiated singleton). We must call `new` to get an instance with .quote().
@@ -12,6 +13,33 @@ const yahooFinance: any =
     ? _YFClass          // already an instance (forward-compat)
     : new _YFClass({});  // instantiate the class to get prototype methods
 try { _YFClass.suppressNotices?.(["yahooSurvey"]); } catch { /* not available in this build */ }
+
+// ─── Persist Yahoo cookies across restarts to avoid 429 crumb re-fetch ────────
+const COOKIE_JAR_PATH = path.join(process.cwd(), ".yahoo-cookies.json");
+async function saveYahooCookies() {
+  try {
+    const jar: any = yahooFinance?._opts?.cookieJar;
+    if (!jar?.serialize) return;
+    const data = await jar.serialize();
+    fs.writeFileSync(COOKIE_JAR_PATH, JSON.stringify(data), "utf8");
+  } catch { /* non-fatal */ }
+}
+async function loadYahooCookies() {
+  try {
+    if (!fs.existsSync(COOKIE_JAR_PATH)) return;
+    const raw = JSON.parse(fs.readFileSync(COOKIE_JAR_PATH, "utf8"));
+    const jar: any = yahooFinance?._opts?.cookieJar;
+    if (!jar) return;
+    for (const c of (raw?.cookies ?? [])) {
+      try {
+        const domain = c.domain ? `https://${c.domain.replace(/^\./, "")}/` : "https://finance.yahoo.com/";
+        await jar.setCookie(`${c.key}=${c.value}`, domain);
+      } catch { /* skip invalid cookies */ }
+    }
+    console.log(`[yahoo] restored ${(raw?.cookies ?? []).length} cookies from disk — skipping crumb fetch`);
+  } catch { /* non-fatal — will fetch fresh session */ }
+}
+loadYahooCookies().catch(() => {});
 
 // ─── Evidence-Based Signal Weights (from backtesting 2007-2026) ───────────────
 // Derived via logistic regression + IC analysis on 4,784 trading days
@@ -337,6 +365,7 @@ async function getMarketData() {
     dataSourceError = false;
     cachedData = payload;
     lastFetch = now;
+    saveYahooCookies().catch(() => {}); // persist session so restarts skip crumb fetch
     return payload;
   } catch (e) {
     console.error("Market fetch error:", e);
