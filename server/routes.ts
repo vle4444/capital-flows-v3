@@ -11,6 +11,7 @@ const yahooFinance: any =
   typeof _YFClass?.quote === "function"
     ? _YFClass          // already an instance (forward-compat)
     : new _YFClass({});  // instantiate the class to get prototype methods
+yahooFinance.suppressNotices(["yahooSurvey"]);
 
 // ─── Evidence-Based Signal Weights (from backtesting 2007-2026) ───────────────
 // Derived via logistic regression + IC analysis on 4,784 trading days
@@ -203,6 +204,19 @@ async function getMarketData() {
       yahooFinance.quote(["SPY","HYG","LQD","TLT","TIP"]),
       yahooFinance.quote("^VIX"),
     ]);
+    // Log any quote fetch rejections explicitly
+    if (quotesRes.status === "rejected") {
+      const errMsg = String((quotesRes as any).reason?.message ?? quotesRes);
+      const is429 = errMsg.includes("429") || errMsg.toLowerCase().includes("too many");
+      console.error(`[yahoo] quotes fetch failed${is429 ? " (429 rate-limited)" : ""}: ${errMsg.slice(0, 120)}`);
+      // On rate-limit use 5-min backoff; otherwise 30s
+      const backoff = is429 ? 5 * 60_000 : 30_000;
+      lastFetch = now - CACHE_TTL + backoff;
+      dataSourceError = true;
+      if (dbCache) { const stale = JSON.parse(dbCache.value); stale._stale = true; return stale; }
+      return null;
+    }
+
     const quotes = quotesRes.status === "fulfilled" ? quotesRes.value : [];
     const qSpy = Array.isArray(quotes) ? quotes.find((q:any) => q.symbol === "SPY") : null;
     const qHyg = Array.isArray(quotes) ? quotes.find((q:any) => q.symbol === "HYG") : null;
@@ -226,11 +240,11 @@ async function getMarketData() {
 
     // If core signals missing, prefer cached payload over null
     if (!spyPrice || !hygPrice || !lqdPrice) {
+      console.warn("[yahoo] prices returned zero — possible rate-limit or market closed. Serving stale cache.");
       if (dbCache) {
         const stale = JSON.parse(dbCache.value);
         stale._stale = true;
-        // 30s backoff to avoid hammering on repeated requests
-        lastFetch = now - CACHE_TTL + 30_000;
+        lastFetch = now - CACHE_TTL + 5 * 60_000; // 5-min backoff
         return stale;
       }
       return null;
