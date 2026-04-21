@@ -11,7 +11,7 @@ const yahooFinance: any =
   typeof _YFClass?.quote === "function"
     ? _YFClass          // already an instance (forward-compat)
     : new _YFClass({});  // instantiate the class to get prototype methods
-yahooFinance.suppressNotices(["yahooSurvey"]);
+try { _YFClass.suppressNotices?.(["yahooSurvey"]); } catch { /* not available in this build */ }
 
 // ─── Evidence-Based Signal Weights (from backtesting 2007-2026) ───────────────
 // Derived via logistic regression + IC analysis on 4,784 trading days
